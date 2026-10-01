@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: delay-predictor
+  namespace: ml-models
+  labels:
+    app: delay-predictor
+    version: v2
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: delay-predictor
+  template:
+    metadata:
+      labels:
+        app: delay-predictor
+        version: v2
+    spec:
+      containers:
+        - name: delay-predictor
+          image: 608827180555.dkr.ecr.ap-south-1.amazonaws.com/foodrush-delay-predictor:latest
+          ports:
+            - containerPort: 8000
+ 
+          env:
+            - name: MODEL_VERSION
+              value: "v2"
+            - name: AWS_REGION
+              value: "ap-south-1"
+            - name: MODEL_S3_BUCKET
+              value: "mlflow-artifacts-608827180555"
+            - name: MODEL_S3_KEY
+              value: ""
+ 
+          # Resource limits — always set these in production
+          # Without limits, one pod can starve all other pods on the node
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+ 
+          # Liveness probe — restart pod if API stops responding
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 3
+ 
+          # Readiness probe — only send traffic when model is loaded
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            failureThreshold: 3

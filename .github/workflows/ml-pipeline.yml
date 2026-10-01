@@ -1,0 +1,88 @@
+name: ML Model Pipeline
+ 
+# Trigger only when model files change — avoids
+# running this expensive pipeline on unrelated repo changes
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app/**'
+      - 'scripts/**'
+      - 'Dockerfile'
+      - '.github/workflows/ml-pipeline.yml'
+  workflow_dispatch:   # allows manual trigger from GitHub UI too
+ 
+env:
+  AWS_REGION: ap-south-1
+  ECR_REPOSITORY: foodrush-delay-predictor
+ 
+# Required for OIDC — GitHub issues a short-lived identity token
+permissions:
+  id-token: write
+  contents: write
+ 
+jobs:
+  train-validate-deploy:
+    runs-on: ubuntu-latest
+ 
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+ 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+ 
+      # ── TRAIN + ACCURACY GATE ──────────────────────────
+      - name: Install training dependencies
+        run: pip install -r scripts/requirements.txt
+ 
+      - name: Train model and validate accuracy
+        run: python3 scripts/train_and_validate.py
+        # This step FAILS the whole pipeline if accuracy < 0.90
+        # Everything after this only runs if the model passed
+ 
+      - name: Show training metrics in job summary
+        run: |
+          echo "## Model Training Results" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat metrics.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+ 
+      # ── AWS AUTH via OIDC — no stored secrets ──────────
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::608827180555:role/github-actions-ai-devops-platform
+          aws-region: ${{ env.AWS_REGION }}
+ 
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+ 
+      # ── BUILD + PUSH — only reached if accuracy gate passed ──
+      - name: Build and push Docker image
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+ 
+      # ── UPDATE MANIFEST — this is what Week 5's ArgoCD watches ──
+      - name: Update Kubernetes manifest with new image tag
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          sed -i "s|image: .*foodrush-delay-predictor:.*|image: $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG|" \
+            k8s/deployment.yaml
+ 
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add k8s/deployment.yaml
+          git diff --staged --quiet || git commit -m "chore: deploy model image ${IMAGE_TAG:0:7} [skip ci]"
+          git push

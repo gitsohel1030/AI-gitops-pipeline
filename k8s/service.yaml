@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: delay-predictor-svc
+  namespace: ml-models
+spec:
+  selector:
+    app: delay-predictor
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8000
+  type: ClusterIP
