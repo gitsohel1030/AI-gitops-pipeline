@@ -1,10 +1,11 @@
-# AI-gitops-pipeline — CI Pipeline for the FoodRush Delay Predictor
+# AI-gitops-pipeline — CI/CD for the FoodRush Delay Predictor
  
 A GitHub Actions pipeline that trains an ML model, blocks bad models with an
 accuracy gate, builds a container image, pushes it to Amazon ECR, and updates the
 Kubernetes manifest with the new image tag — with no long-lived AWS keys.
+ArgoCD then deploys that tag to an EKS cluster straight from Git.
  
-Part of a 12-week AI-in-DevOps learning project (Week 4). Sibling repo:
+Part of a 12-week AI-in-DevOps learning project (Weeks 4 and 5). Sibling repo:
 `ai-devops-platform` (Bedrock log analyzer, MLflow tracking, FastAPI serving,
 EKS Terraform).
  
@@ -13,7 +14,8 @@ EKS Terraform).
 | Stage | State |
 |-------|-------|
 | CI: train, accuracy gate, build, push, manifest update | Working (verified end to end) |
-| CD: ArgoCD auto-sync to EKS | Next (Week 5) |
+| CD: ArgoCD auto-sync to EKS | Working (Application Synced and Healthy on EKS) |
+| Model monitoring (Prometheus + Grafana) | Next (Week 6) |
  
 ## Pipeline Flow
  
@@ -32,7 +34,10 @@ GitHub Actions runner (ubuntu-latest)
         +-- 7. Bot commits the manifest back to main ([skip ci])
         |
         v
-(Week 5) ArgoCD watches k8s/ and deploys the new tag to EKS
+ArgoCD (on EKS) polls k8s/ on main
+        |
+        +-- 8. Detects the new image tag
+        +-- 9. Syncs the Deployment in namespace ml-models (rolling update)
 ```
  
 ## Why Each Design Choice
@@ -45,16 +50,20 @@ GitHub Actions runner (ubuntu-latest)
 | Model baked into the image | Fast startup, no S3 call at boot, immutable artifact per commit |
 | `[skip ci]` on the bot commit | Stops the manifest update from re-triggering the pipeline |
 | `paths` filter | Pipeline runs only when model/app files change, not on README edits |
+| ArgoCD automated sync (prune + selfHeal) | Git is the single source of truth; manual cluster edits are reverted |
+| Manifests in the same repo as CI | Simplest for one service; the bot needs no cross-repo token |
  
 ## Repository Structure
  
 ```
 AI-gitops-pipeline/
-├── .github/workflows/ml-pipeline.yml   # the pipeline
+├── .github/workflows/ml-pipeline.yml   # the CI pipeline
 ├── app/                                # FastAPI inference service
 │   ├── main.py                         #   /predict, /health, /ready, /model-info
 │   ├── model.py                        #   loads model.pkl (S3 / fallback if absent)
 │   └── requirements.txt
+├── argocd/
+│   └── application.yaml                # ArgoCD Application (applied once to bootstrap)
 ├── scripts/
 │   ├── train_and_validate.py           # trains model + accuracy gate
 │   └── requirements.txt
@@ -65,6 +74,31 @@ AI-gitops-pipeline/
 ├── iam/                                # reference IAM policies for the CI role
 ├── Dockerfile
 └── .gitignore
+```
+ 
+## GitOps Deployment (ArgoCD)
+ 
+`argocd/application.yaml` tells ArgoCD what to watch and where to deploy it. It is
+the only manual `kubectl apply` in the workflow; after that, Git drives everything.
+ 
+```bash
+kubectl apply -f argocd/application.yaml
+kubectl get applications -n argocd
+```
+ 
+| Field | Value | Meaning |
+|-------|-------|---------|
+| `source.repoURL` / `targetRevision` | this repo, `main` | What ArgoCD watches |
+| `source.path` | `k8s` | Only this folder is deployed |
+| `destination.namespace` | `ml-models` | Where the model service runs |
+| `syncPolicy.automated.prune` | true | Resources deleted from Git are deleted from the cluster |
+| `syncPolicy.automated.selfHeal` | true | Manual cluster edits are reverted to match Git |
+| finalizer | `resources-finalizer.argocd.argoproj.io` | Deleting the Application also deletes what it deployed |
+ 
+ArgoCD checks Git about every 3 minutes. To skip the wait after a pipeline run:
+ 
+```bash
+kubectl annotate application delay-predictor -n argocd argocd.argoproj.io/refresh=hard --overwrite
 ```
  
 ## Results
@@ -92,6 +126,10 @@ is synthetic (2,000 samples, fixed seed), generated to mimic FoodRush orders.
 repo:<owner>@<owner-id>/<repo>@<repo-id>:*
 ```
  
+- EKS cluster `ai-platform-cluster` is provisioned with Terraform in the
+  `ai-devops-platform` repo (`eks-cluster/`), with ArgoCD, Prometheus and Loki. It
+  is created for working sessions and destroyed afterwards to control cost.
+ 
 Reference policies are in `iam/`. Replace `<ACCOUNT_ID>` with your own.
  
 ## Run the Training Step Locally
@@ -116,6 +154,18 @@ aws ecr describe-images --repository-name foodrush-delay-predictor \
  
 The tag in `deployment.yaml` should appear in the ECR tag list.
  
+## Verify the Deployment (cluster running)
+ 
+```bash
+kubectl get applications -n argocd
+kubectl get pods -n ml-models
+kubectl get deployment delay-predictor -n ml-models \
+  -o jsonpath='{.spec.template.spec.containers[0].image}'; echo
+```
+ 
+The application should be `Synced` and `Healthy`, two pods `1/1 Running`, and the
+image tag should match the one in `k8s/deployment.yaml`.
+ 
 ## Issues Hit and How They Were Fixed
  
 | Issue | Cause | Fix |
@@ -125,6 +175,8 @@ The tag in `deployment.yaml` should appear in the ECR tag list.
 | Same error, correct role | GitHub's `sub` claim embeds numeric owner and repo IDs, so the trust pattern never matched | Printed the real claims from the runner, then pinned the IDs in the trust policy (also safer against repo-name reuse) |
 | Bot `git push` rejected | `main` moved while the job ran (or a re-run replayed an old commit) | `git pull --rebase origin main` before the bot pushes |
 | Workflow steps deleted by a `sed` edit | Range delete ran to end of file when no blank line followed | Restored the file from the last good commit; bounded the range using line numbers |
+| ArgoCD app `Synced` but `Degraded` | Synced only means the cluster matches Git; health is separate, and the pods were failing to start | Read pod events (`kubectl get events -n ml-models`) instead of the ArgoCD status |
+| Pods in `ErrImagePull` ("not found") | The manifest referenced an image tag that ECR did not have | Rebuilt the image with the workflow's manual trigger, then forced an ArgoCD refresh |
  
 ## Known Limitations
  
@@ -137,8 +189,13 @@ The tag in `deployment.yaml` should appear in the ECR tag list.
 - `app/` also exists in the `ai-devops-platform` repo (`model-serving`). This repo
   is the source of truth going forward.
 - ECR keeps every image; a lifecycle policy should expire old SHA tags.
+- ArgoCD polls Git roughly every 3 minutes; a webhook would make deploys near-instant.
+- During demos the ArgoCD UI was exposed through a public LoadBalancer, removed with
+  the cluster. Production would use an internal ingress with SSO.
+- The model service is not monitored yet (no metrics endpoint, dashboard or alerts).
  
-## Next: Week 5
+## Next: Week 6
  
-ArgoCD on EKS watches `k8s/` in this repo and deploys each new image tag
-automatically, completing the push-to-production GitOps loop.
+Model monitoring: expose Prometheus metrics from the FastAPI service (request count,
+latency histogram, prediction confidence), scrape them with a ServiceMonitor, build a
+Grafana dashboard, and add an alert on latency or error rate.
