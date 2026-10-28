@@ -19,7 +19,7 @@ spec:
     spec:
       containers:
         - name: delay-predictor
-          image: 608827180555.dkr.ecr.ap-south-1.amazonaws.com/foodrush-delay-predictor:4bf737d351119b6b5d260241d6bbeb165339bf7f
+          image: 608827180555.dkr.ecr.ap-south-1.amazonaws.com/foodrush-delay-predictor:e4b889dfbafc6e5cb8668ea55b232ab9c1fbb445
           ports:
             - containerPort: 8000
  
