@@ -1,0 +1,66 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: delay-predictor-dashboard
+  namespace: ml-models
+  labels:
+    grafana_dashboard: "1"     # picked up by the Grafana sidecar (searchNamespace: ALL)
+data:
+  delay-predictor.json: |
+    {
+      "uid": "delay-predictor",
+      "title": "FoodRush Delay Predictor — Model Monitoring",
+      "tags": ["mlops", "delay-predictor"],
+      "schemaVersion": 39,
+      "refresh": "30s",
+      "time": {"from": "now-1h", "to": "now"},
+      "templating": {"list": [
+        {"name": "datasource", "label": "Data source", "type": "datasource",
+         "query": "prometheus", "current": {}, "hide": 0}
+      ]},
+      "panels": [
+        {"id": 1, "type": "stat", "title": "Healthy targets",
+         "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+         "datasource": {"type": "prometheus", "uid": "${datasource}"},
+         "targets": [{"refId": "A",
+           "expr": "sum(up{namespace=\"ml-models\", service=\"delay-predictor-svc\"})"}]},
+        {"id": 2, "type": "stat", "title": "DELAYED ratio (5m)",
+         "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+         "datasource": {"type": "prometheus", "uid": "${datasource}"},
+         "fieldConfig": {"defaults": {"unit": "percentunit"}, "overrides": []},
+         "targets": [{"refId": "A",
+           "expr": "sum(rate(delay_predictor_predictions_total{namespace=\"ml-models\", outcome=\"DELAYED\"}[5m])) / sum(rate(delay_predictor_predictions_total{namespace=\"ml-models\"}[5m]))"}]},
+        {"id": 3, "type": "stat", "title": "Avg confidence (5m)",
+         "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+         "datasource": {"type": "prometheus", "uid": "${datasource}"},
+         "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}, "overrides": []},
+         "targets": [{"refId": "A",
+           "expr": "sum(rate(delay_predictor_prediction_confidence_sum{namespace=\"ml-models\"}[5m])) / sum(rate(delay_predictor_prediction_confidence_count{namespace=\"ml-models\"}[5m]))"}]},
+        {"id": 4, "type": "stat", "title": "Errors/sec (5m)",
+         "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+         "datasource": {"type": "prometheus", "uid": "${datasource}"},
+         "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []},
+         "targets": [{"refId": "A",
+           "expr": "sum(rate(delay_predictor_prediction_errors_total{namespace=\"ml-models\"}[5m]))"}]},
+        {"id": 5, "type": "timeseries", "title": "Predictions/sec by outcome",
+         "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+         "datasource": {"type": "prometheus", "uid": "${datasource}"},
+         "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []},
+         "targets": [{"refId": "A", "legendFormat": "{{outcome}}",
+           "expr": "sum by (outcome) (rate(delay_predictor_predictions_total{namespace=\"ml-models\"}[5m]))"}]},
+        {"id": 6, "type": "timeseries", "title": "Inference latency p50 / p95",
+         "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+         "datasource": {"type": "prometheus", "uid": "${datasource}"},
+         "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+         "targets": [
+           {"refId": "A", "legendFormat": "p50",
+            "expr": "histogram_quantile(0.50, sum by (le) (rate(delay_predictor_prediction_latency_seconds_bucket{namespace=\"ml-models\"}[5m])))"},
+           {"refId": "B", "legendFormat": "p95",
+            "expr": "histogram_quantile(0.95, sum by (le) (rate(delay_predictor_prediction_latency_seconds_bucket{namespace=\"ml-models\"}[5m])))"}]},
+        {"id": 7, "type": "timeseries", "title": "Confidence distribution (rate per bucket)",
+         "gridPos": {"h": 8, "w": 24, "x": 0, "y": 12},
+         "datasource": {"type": "prometheus", "uid": "${datasource}"},
+         "targets": [{"refId": "A", "legendFormat": "le {{le}}",
+           "expr": "sum by (le) (rate(delay_predictor_prediction_confidence_bucket{namespace=\"ml-models\"}[5m]))"}]}
+      ]
+    }
