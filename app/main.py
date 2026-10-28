@@ -12,7 +12,7 @@ confirming an order to warn customers about potential delays.
 Author: Sohel Mubarak Mujawar
 """
  
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel, Field
 from contextlib import asynccontextmanager
 import uvicorn
@@ -20,6 +20,7 @@ import logging
 import time
 import os
 from model import load_model, predict
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
  
 # ── Logging setup ─────────────────────────────────────────
 # Structured logging — every log line has timestamp + level
@@ -29,6 +30,30 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+# ── Prometheus metrics (Week 6) ───────────────────────────
+# Scraped by Prometheus via the ServiceMonitor -> GET /metrics
+PREDICTIONS = Counter(
+    "delay_predictor_predictions_total",
+    "Predictions served, by predicted outcome",
+    ["outcome"],
+)
+PREDICTIONS.labels(outcome="DELAYED")   # pre-create series at 0
+PREDICTIONS.labels(outcome="ON_TIME")
+PREDICTION_ERRORS = Counter(
+    "delay_predictor_prediction_errors_total",
+    "Predictions that raised an exception (HTTP 500)",
+)
+PREDICTION_LATENCY = Histogram(
+    "delay_predictor_prediction_latency_seconds",
+    "Model inference latency inside /predict",
+    buckets=(0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0),
+)
+PREDICTION_CONFIDENCE = Histogram(
+    "delay_predictor_prediction_confidence",
+    "Confidence of the predicted class",
+    buckets=(0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 1.0),
+)
  
  
 # ── Request schema ────────────────────────────────────────
@@ -179,6 +204,9 @@ def predict_delay(order: OrderFeatures):
         latency_ms = (time.time() - start_time) * 1000
  
         label = "DELAYED" if prediction == 1 else "ON_TIME"
+        PREDICTIONS.labels(outcome=label).inc()
+        PREDICTION_LATENCY.observe(latency_ms / 1000)
+        PREDICTION_CONFIDENCE.observe(confidence)
  
         logger.info(
             f"Prediction: {label} | "
@@ -197,11 +225,18 @@ def predict_delay(order: OrderFeatures):
         )
  
     except Exception as e:
+        PREDICTION_ERRORS.inc()
         logger.error(f"Prediction failed: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
  
  
 # ── Model info endpoint ───────────────────────────────────
+# ── Metrics endpoint (Week 6) ─────────────────────────────
+@app.get("/metrics", include_in_schema=False)
+def metrics():
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
 @app.get("/model-info")
 def model_info():
     """Returns metadata about the loaded model."""

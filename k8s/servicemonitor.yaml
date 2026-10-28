@@ -1,0 +1,17 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: delay-predictor
+  namespace: ml-models
+  labels:
+    release: prometheus        # kube-prometheus-stack selects on its release name
+spec:
+  selector:
+    matchLabels:
+      app: delay-predictor     # matches the Service metadata label
+  namespaceSelector:
+    matchNames: [ml-models]
+  endpoints:
+    - port: http               # the named Service port
+      path: /metrics
+      interval: 15s

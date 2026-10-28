@@ -1,0 +1,37 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: delay-predictor-alerts
+  namespace: ml-models
+  labels:
+    release: prometheus
+spec:
+  groups:
+    - name: delay-predictor
+      rules:
+        - alert: DelayPredictorDown
+          expr: absent(up{namespace="ml-models", service="delay-predictor-svc"} == 1)
+          for: 5m
+          labels: {severity: critical}
+          annotations:
+            summary: "No healthy delay-predictor scrape target for 5m"
+        - alert: DelayPredictorHighLatency
+          expr: histogram_quantile(0.95, sum by (le) (rate(delay_predictor_prediction_latency_seconds_bucket[5m]))) > 0.1
+          for: 5m
+          labels: {severity: warning}
+          annotations:
+            summary: "p95 inference latency above 100ms"
+        - alert: DelayPredictorErrors
+          expr: sum(rate(delay_predictor_prediction_errors_total[5m])) > 0
+          for: 5m
+          labels: {severity: warning}
+          annotations:
+            summary: "Predictions are failing with HTTP 500"
+        - alert: DelayPredictorConfidenceDrop
+          expr: |
+            sum(rate(delay_predictor_prediction_confidence_sum[15m]))
+              / sum(rate(delay_predictor_prediction_confidence_count[15m])) < 0.7
+          for: 15m
+          labels: {severity: warning}
+          annotations:
+            summary: "Average model confidence below 0.7 (possible data drift)"

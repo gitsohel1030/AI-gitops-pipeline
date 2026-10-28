@@ -30,4 +30,4 @@ crash.*.log
 .DS_Store
 Thumb.db
 model.pkl
-metrics.txt
+metrics.txt.pytest_cache/

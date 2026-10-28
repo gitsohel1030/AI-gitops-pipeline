@@ -3,11 +3,14 @@ kind: Service
 metadata:
   name: delay-predictor-svc
   namespace: ml-models
+  labels:
+    app: delay-predictor
 spec:
   selector:
     app: delay-predictor
   ports:
-    - protocol: TCP
+    - name: http
+      protocol: TCP
       port: 80
       targetPort: 8000
   type: ClusterIP
