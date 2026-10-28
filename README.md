@@ -194,8 +194,37 @@ image tag should match the one in `k8s/deployment.yaml`.
   the cluster. Production would use an internal ingress with SSO.
 - The model service is not monitored yet (no metrics endpoint, dashboard or alerts).
  
-## Next: Week 6
- 
-Model monitoring: expose Prometheus metrics from the FastAPI service (request count,
-latency histogram, prediction confidence), scrape them with a ServiceMonitor, build a
-Grafana dashboard, and add an alert on latency or error rate.
+## Week 6 — Model Monitoring (Prometheus + Grafana)
+
+Verified on EKS 1.35 (AL2023 nodes) on 2026-10-28; cluster destroyed afterwards.
+
+### What was added
+- `/metrics` endpoint (`prometheus-client`): prediction counter by outcome, inference
+  latency histogram, confidence histogram, error counter. Covered by unit tests (`tests/`).
+- Named Service port + Service label, `ServiceMonitor` (`release: prometheus`).
+- `PrometheusRule` with 4 alerts: target down, p95 latency > 100 ms, prediction errors,
+  average confidence < 0.7 (simple drift signal).
+- Grafana dashboard as code (ConfigMap, picked up by the Grafana sidecar), deployed by ArgoCD.
+
+### Verified results
+| Check | Result |
+|---|---|
+| ArgoCD application | Synced / Healthy |
+| `/predict` on cluster | DELAYED, confidence 0.9989 |
+| Prometheus targets | 2/2 pods `up` |
+| Alert rules loaded | 4/4 |
+| Dashboard | Populated with synthetic load (~2 req/s through one port-forward) |
+| GitOps rollout | Commit `000f847` (MODEL_VERSION v2 → v3) → ArgoCD sync → new pods → API reports `v3`; image unchanged |
+
+### Supply-chain hardening
+- CI builds with `--provenance=false --sbom=false` so ECR can scan the image
+  (attestations made the tag an OCI index, which ECR basic scanning rejects).
+- ECR basic scan-on-push (OS packages only). Latest image: 0 CRITICAL, 3 HIGH, 9 MEDIUM, 3 LOW.
+- Accepted risk: the 3 HIGH findings (CVE-2026-19499, CVE-2026-5435 in glibc; CVE-2026-85091
+  in zlib) come from the Debian 13 base image. No fixed package was available at scan time
+  (2026-10-28). They are rechecked on every build.
+
+### Known limitations
+- `/model-info` still hardcodes accuracy/F1.
+- Load was generated through a single port-forward, so it is not a load-balanced load test.
+- The data is synthetic.
